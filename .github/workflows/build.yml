@@ -1,15 +1,19 @@
-
 name: build-android-phonemizer
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/build.yml
 
 jobs:
   arm64:
     runs-on: ubuntu-latest
     steps:
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build git wget unzip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build git wget unzip
 
       - name: Download Android NDK r26b
         run: |
@@ -18,7 +22,8 @@ jobs:
           echo "NDK_HOME=$GITHUB_WORKSPACE/android-ndk-r26b" >> $GITHUB_ENV
 
       - name: Clone espeak-ng
-        run: git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git
+        run: |
+          git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git
 
       - name: Build espeak-ng for Android (arm64-v8a)
         run: |
@@ -38,6 +43,7 @@ jobs:
       - name: Create JNI wrapper source (libpiper_phonemize.so)
         run: |
           mkdir -p jni-wrapper
+
           cat > jni-wrapper/CMakeLists.txt << 'EOF'
           cmake_minimum_required(VERSION 3.10)
           project(piper_phonemize_jni)
@@ -47,7 +53,6 @@ jobs:
 
           target_compile_features(piper_phonemize PRIVATE cxx_std_17)
 
-          # ESPEAK_INSTALL will be passed in from the build step
           target_include_directories(piper_phonemize PRIVATE
               ${ESPEAK_INSTALL}/include
           )
@@ -59,65 +64,61 @@ jobs:
           EOF
 
           cat > jni-wrapper/piper_phonemize_jni.cpp << 'EOF'
-         #include <jni.h>
-#include <string>
-#include <mutex>
-#include <cstdlib>
+          #include <jni.h>
+          #include <string>
+          #include <mutex>
+          #include <cstdlib>
 
-#include "espeak-ng/speak_lib.h"
+          #include "espeak-ng/speak_lib.h"
 
-static std::mutex g_mutex;
-static bool g_inited = false;
+          static std::mutex g_mutex;
+          static bool g_inited = false;
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_spectre_protocol_voicematrix_engines_phonemizer_PiperPhonemizerNative_nativeInit(
-    JNIEnv* env, jclass, jstring dataDirPathJ
-) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_inited) return JNI_TRUE;
+          extern "C" JNIEXPORT jboolean JNICALL
+          Java_com_spectre_protocol_voicematrix_engines_phonemizer_PiperPhonemizerNative_nativeInit(
+              JNIEnv* env, jclass, jstring dataDirPathJ
+          ) {
+              std::lock_guard<std::mutex> lock(g_mutex);
+              if (g_inited) return JNI_TRUE;
 
-    const char* dataDir = env->GetStringUTFChars(dataDirPathJ, nullptr);
+              const char* dataDir = env->GetStringUTFChars(dataDirPathJ, nullptr);
 
-    // Tell espeak-ng where its data files are (phondata, phontab, etc.)
-    setenv("ESPEAK_DATA_PATH", dataDir, 1);
+              setenv("ESPEAK_DATA_PATH", dataDir, 1);
 
-    // IMPORTANT: pass the dataDir directly to espeak_Initialize (no espeak_SetPath)
-    int sampleRate = espeak_Initialize(AUDIO_OUTPUT_RETRIEVAL, 0, dataDir, 0);
+              int sampleRate = espeak_Initialize(AUDIO_OUTPUT_RETRIEVAL, 0, dataDir, 0);
 
-    env->ReleaseStringUTFChars(dataDirPathJ, dataDir);
+              env->ReleaseStringUTFChars(dataDirPathJ, dataDir);
 
-    if (sampleRate <= 0) return JNI_FALSE;
+              if (sampleRate <= 0) return JNI_FALSE;
 
-    g_inited = true;
-    return JNI_TRUE;
-}
+              g_inited = true;
+              return JNI_TRUE;
+          }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_spectre_protocol_voicematrix_engines_phonemizer_PiperPhonemizerNative_nativePhonemize(
-    JNIEnv* env, jclass, jstring textJ, jstring voiceJ
-) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_inited) return env->NewStringUTF("");
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_com_spectre_protocol_voicematrix_engines_phonemizer_PiperPhonemizerNative_nativePhonemize(
+              JNIEnv* env, jclass, jstring textJ, jstring voiceJ
+          ) {
+              std::lock_guard<std::mutex> lock(g_mutex);
+              if (!g_inited) return env->NewStringUTF("");
 
-    const char* text = env->GetStringUTFChars(textJ, nullptr);
-    const char* voice = env->GetStringUTFChars(voiceJ, nullptr);
+              const char* text = env->GetStringUTFChars(textJ, nullptr);
+              const char* voice = env->GetStringUTFChars(voiceJ, nullptr);
 
-    // Set voice name (examples: "en-us", "ta", "ml")
-    espeak_SetVoiceByName(voice);
+              espeak_SetVoiceByName(voice);
 
-    const void* pText = text;
+              const void* pText = text;
 
-    // Use IPA output (no SEPARATE flag; not available in your header)
-    int phonemeMode = espeakPHONEMES_IPA;
-    const char* phon = espeak_TextToPhonemes(&pText, espeakCHARS_UTF8, phonemeMode);
+              int phonemeMode = espeakPHONEMES_IPA;
+              const char* phon = espeak_TextToPhonemes(&pText, espeakCHARS_UTF8, phonemeMode);
 
-    std::string out = (phon != nullptr) ? std::string(phon) : std::string("");
+              std::string out = (phon != nullptr) ? std::string(phon) : std::string("");
 
-    env->ReleaseStringUTFChars(textJ, text);
-    env->ReleaseStringUTFChars(voiceJ, voice);
+              env->ReleaseStringUTFChars(textJ, text);
+              env->ReleaseStringUTFChars(voiceJ, voice);
 
-    return env->NewStringUTF(out.c_str());
-}
+              return env->NewStringUTF(out.c_str());
+          }
           EOF
 
       - name: Build JNI wrapper for Android (arm64-v8a)
@@ -143,15 +144,12 @@ Java_com_spectre_protocol_voicematrix_engines_phonemizer_PiperPhonemizerNative_n
 
           cp "$ESPEAK_SO" out/jniLibs/arm64-v8a/
           cp "$PIPER_SO" out/jniLibs/arm64-v8a/
-
-          # Optional: libc++_shared (sometimes already provided by onnxruntime-android in your app)
           cp "$NDK_HOME/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so" out/jniLibs/arm64-v8a/
 
           mkdir -p out/assets/voicematrix/phonemizer
           cp -r $GITHUB_WORKSPACE/espeak-ng/espeak-ng-data out/assets/voicematrix/phonemizer/espeak-ng-data
 
           ls -la out/jniLibs/arm64-v8a
-          ls -la out/assets/voicematrix/phonemizer/espeak-ng-data | head -n 30
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
